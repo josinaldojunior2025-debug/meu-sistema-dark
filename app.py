@@ -8,10 +8,10 @@ except:
     st.error("Erro: A chave API não foi configurada nos Secrets do Streamlit.")
 
 st.set_page_config(page_title="Sistema de Voz Dark", page_icon="🎙️")
-st.title("🎙️ Gerador de Voz Realista")
+st.title("🎙️Dark Infor - Vozes Realistas")
 
 # 2. Senha para proteger seus créditos
-SENHA_MESTRA = "suasenha123" 
+SENHA_MESTRA = "150219Jpa." 
 
 # Barra lateral configurada para Senha
 senha_digitada = st.sidebar.text_input("Senha de Acesso:", type="password")
