@@ -1,75 +1,88 @@
 import streamlit as st
 from openai import OpenAI
-from supabase import create_client, Client
+from supabase import create_client
+import os
 
-# 1. Configuração de conexão com as APIs (Secrets)
+# Configurações de página e Estilo Dark
+st.set_page_config(page_title="Dark Infor - Vozes Profissionais", layout="centered")
+
+# Inicializar clientes
 try:
-    url: str = st.secrets["SUPABASE_URL"]
-    key: str = st.secrets["SUPABASE_KEY"]
-    supabase: Client = create_client(url, key)
     client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+    supabase = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 except Exception as e:
-    st.error("Erro nas chaves de configuração. Verifique os Secrets.")
+    st.error(f"Erro na conexão com as chaves: {e}")
 
-st.set_page_config(page_title="Dark Infor - Vozes Realistas", page_icon="🎙️")
-
-# --- SISTEMA DE AUTENTICAÇÃO ---
+# Gerenciamento de Sessão (Para não desconectar)
 if "user" not in st.session_state:
     st.session_state.user = None
 
 def login():
-    st.sidebar.title("Entrar no Dark Infor")
-    email = st.sidebar.text_input("E-mail")
-    password = st.sidebar.text_input("Senha", type="password")
-    if st.sidebar.button("Login"):
+    st.title("Entrar no Dark Infor")
+    email = st.text_input("E-mail")
+    senha = st.text_input("Senha", type="password")
+    if st.button("Login"):
         try:
-            res = supabase.auth.sign_in_with_password({"email": email, "password": password})
+            res = supabase.auth.sign_in_with_password({"email": email, "password": senha})
             st.session_state.user = res.user
             st.rerun()
         except:
-            st.sidebar.error("E-mail ou senha incorretos.")
+            st.error("E-mail ou senha incorretos.")
 
 def cadastro():
-    st.sidebar.title("Criar Nova Conta")
-    novo_email = st.sidebar.text_input("Novo E-mail")
-    nova_senha = st.sidebar.text_input("Nova Senha", type="password")
-    if st.sidebar.button("Cadastrar"):
+    st.title("Criar Nova Conta")
+    novo_email = st.text_input("Novo E-mail")
+    nova_senha = st.text_input("Nova Senha", type="password")
+    if st.button("Cadastrar"):
         try:
             supabase.auth.sign_up({"email": novo_email, "password": nova_senha})
-            st.sidebar.success("Conta criada! Agora faça o login.")
+            st.success("Cadastro realizado! Tente fazer o login.")
         except Exception as e:
-            st.sidebar.error(f"Erro ao cadastrar: {e}")
+            st.error(f"Erro ao cadastrar: {e}")
 
-# --- LÓGICA DE TELAS ---
+# Interface Principal
 if st.session_state.user is None:
-    st.title("🎙️ Bem-vindo ao Dark Infor")
-    st.info("Para usar nossas vozes neurais, faça login ou crie sua conta na barra lateral.")
-    
-    aba = st.sidebar.radio("Escolha uma opção:", ["Login", "Cadastro"])
-    if aba == "Login":
-        login()
-    else:
-        cadastro()
+    tab1, tab2 = st.tabs(["Login", "Cadastro"])
+    with tab1: login()
+    with tab2: cadastro()
 else:
-    # --- ÁREA LOGADA (O GERADOR) ---
-    st.sidebar.success(f"Logado como: {st.session_state.user.email}")
+    # Barra Lateral
+    st.sidebar.success(f"Logado: {st.session_state.user.email}")
     if st.sidebar.button("Sair"):
         st.session_state.user = None
         st.rerun()
 
     st.title("🎙️ Gerador de Voz Profissional")
-    texto = st.text_area("Roteiro do Vídeo:", placeholder="Cole seu roteiro aqui...", height=200)
+    
+    # Suporte a 100 mil caracteres
+    roteiro = st.text_area("Roteiro do Vídeo (Até 100k caracteres):", height=300, max_chars=100000)
+    
+    # Lista de Vozes (Aqui você pode adicionar nomes do ElevenLabs depois)
     voz = st.selectbox("Escolha a Voz:", ["alloy", "echo", "fable", "onyx", "nova", "shimmer"])
 
     if st.button("Gerar Áudio"):
-        if texto:
-            with st.spinner("IA Dark Infor processando..."):
+        if not roteiro:
+            st.warning("Por favor, cole um texto.")
+        else:
+            with st.spinner("Gerando áudio..."):
                 try:
-                    response = client.audio.speech.create(model="tts-1", voice=voz, input=texto)
-                    response.stream_to_file("output.mp3")
-                    st.audio("output.mp3")
+                    response = client.audio.speech.create(
+                        model="tts-1",
+                        voice=voz,
+                        input=roteiro
+                    )
+                    # Gerar arquivo para download
+                    audio_bytes = response.content
+                    st.audio(audio_bytes, format="audio/mp3")
+                    
+                    st.download_button(
+                        label="📥 Baixar Áudio (MP3)",
+                        data=audio_bytes,
+                        file_name="audio_dark_infor.mp3",
+                        mime="audio/mp3"
+                    )
                     st.success("Áudio gerado com sucesso!")
                 except Exception as e:
-                    st.error(f"Erro na geração: {e}")
-        else:
-            st.warning("O roteiro está vazio.")
+                    st.error(f"Erro: {e}")
+
+    st.info("Nota: Para clonagem de voz e ElevenLabs, é necessário integrar a API Key específica.")
