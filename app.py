@@ -2,95 +2,87 @@ import streamlit as st
 from openai import OpenAI
 from supabase import create_client
 import uuid
+import time
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Dark Infor v3", layout="wide")
+# --- 1. CONFIGURAÇÃO DA PÁGINA E SESSÃO ---
+st.set_page_config(page_title="Dark Infor - Gerador Profissional", layout="wide")
 
-# Inicializa o estado da sessão para evitar cliques duplos
-if "logado" not in st.session_state:
-    st.session_state.logado = False
+if "autenticado" not in st.session_state:
+    st.session_state.autenticado = False
+if "usuario_id" not in st.session_state:
+    st.session_state.usuario_id = None
 
-# --- CONEXÕES (Lendo dos Secrets que você acabou de arrumar) ---
+# --- 2. CONEXÃO COM AS CHAVES DOS SECRETS ---
 try:
-    supabase = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
-    openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+    # O código busca exatamente os nomes que você salvou nos Secrets
+    s_url = st.secrets["SUPABASE_URL"]
+    s_key = st.secrets["SUPABASE_KEY"]
+    o_key = st.secrets["OPENAI_API_KEY"]
+    
+    supabase = create_client(s_url, s_key)
+    openai_client = OpenAI(api_key=o_key)
 except Exception as e:
-    st.error("Erro nas chaves! Verifique os Secrets no Streamlit.")
+    st.error(f"⚠️ Erro de Configuração: Verifique se os nomes nos Secrets estão corretos. (Detalhe: {e})")
     st.stop()
 
-# --- INTERFACE DE LOGIN ---
-if not st.session_state.logado:
+# --- 3. LÓGICA DE NAVEGAÇÃO (LOGIN OU GERADOR) ---
+
+# TELA DE LOGIN
+if not st.session_state.autenticado:
     st.title("🛡️ Acesso Dark Infor")
-    with st.form("form_login"):
-        u_email = st.text_input("E-mail")
-        u_senha = st.text_input("Senha", type="password")
-        if st.form_submit_button("Entrar no Sistema"):
+    
+    with st.container():
+        email_input = st.text_input("E-mail")
+        senha_input = st.text_input("Senha", type="password")
+        
+        if st.button("ENTRAR NO SISTEMA", use_container_width=True):
             try:
-                res = supabase.auth.sign_in_with_password({"email": u_email, "password": u_senha})
+                # Autenticação no Supabase
+                res = supabase.auth.sign_in_with_password({"email": email_input, "password": senha_input})
                 if res.user:
-                    st.session_state.logado = True
-                    st.session_state.user_id = res.user.id
-                    st.rerun()
-            except:
+                    st.session_state.autenticado = True
+                    st.session_state.usuario_id = res.user.id
+                    st.success("Login realizado! Entrando...")
+                    time.sleep(0.5)
+                    st.rerun() # Limpa a tela e vai para o gerador
+            except Exception:
                 st.error("E-mail ou senha inválidos.")
 
-# --- INTERFACE DO GERADOR ---
+# TELA DO GERADOR (SÓ APARECE SE ESTIVER LOGADO)
 else:
-    st.sidebar.button("Sair", on_click=lambda: st.session_state.update({"logado": False}))
+    # Menu Lateral
+    st.sidebar.title("Menu")
+    st.sidebar.write(f"Logado como: {st.session_state.usuario_id[:8]}...")
+    if st.sidebar.button("Encerrar Sessão"):
+        st.session_state.autenticado = False
+        st.session_state.usuario_id = None
+        st.rerun()
+
     st.title("🎙️ Gerador de Voz Profissional")
     
-    texto = st.text_area("Roteiro (até 4000 caracteres):", height=200)
-    voz = st.selectbox("Escolha a Voz:", ["onyx", "alloy", "echo", "fable", "nova", "shimmer"])
+    # Área de entrada
+    texto_roteiro = st.text_area("Digite ou cole seu roteiro aqui:", height=250, placeholder="Olá, este é um exemplo de locução...")
     
-    if st.button("🔥 Gerar e Salvar"):
-        if not texto:
-            st.warning("Digite um texto primeiro!")
-        else:
-            with st.spinner("Gerando áudio..."):
-                try:
-                    # 1. Gera o áudio na OpenAI
-                    response = openai_client.audio.speech.create(
-                        model="tts-1",
-                        voice=voz,
-                        input=texto
-                    )
-                    audio_data = response.content
-                    
-                    # 2. Exibe o Player imediatamente
-                    st.audio(audio_data)
-                    st.success("Áudio gerado com sucesso!")
-                    
-                    # 3. Tenta salvar no Supabase (Storage e Banco)
-                    try:
-                        file_name = f"{st.session_state.user_id}/{uuid.uuid4()}.mp3"
-                        # Faz o upload para o bucket 'darkinfor'
-                        supabase.storage.from_("darkinfor").upload(file_name, audio_data)
-                        
-                        # Pega a URL pública e salva no histórico
-                        url_publica = supabase.storage.from_("darkinfor").get_public_url(file_name)
-                        supabase.table("historico_audios").insert({
-                            "user_id": st.session_state.user_id,
-                            "texto": texto[:50],
-                            "url_audio": url_publica
-                        }).execute()
-                        st.info("Salvo no seu histórico!")
-                    except Exception as e_db:
-                        # Se o salvamento falhar, o áudio já está na tela, então apenas avisamos
-                        st.warning(f"Áudio pronto, mas não salvo: {e_db}")
-                        
-                except Exception as e_ai:
-                    st.error(f"Erro na geração (OpenAI): {e_ai}")
+    col1, col2 = st.columns(2)
+    with col1:
+        voz_selecionada = st.selectbox("Escolha a Voz:", ["onyx", "alloy", "echo", "fable", "nova", "shimmer"])
+    with col2:
+        modelo_ia = st.radio("Modelo:", ["tts-1", "tts-1-hd"], horizontal=True)
 
-    # --- SEÇÃO DE HISTÓRICO ---
-    st.divider()
-    st.subheader("📜 Meus Áudios Recentes")
-    try:
-        historico = supabase.table("historico_audios").select("*").eq("user_id", st.session_state.user_id).order("id", desc=True).limit(5).execute()
-        if historico.data:
-            for item in historico.data:
-                with st.expander(f"Texto: {item['texto']}..."):
-                    st.audio(item['url_audio'])
+    if st.button("🔥 GERAR ÁUDIO AGORA", use_container_width=True):
+        if not texto_roteiro:
+            st.warning("Por favor, escreva um texto antes de gerar.")
         else:
-            st.write("Nenhum áudio salvo ainda.")
-    except:
-        st.write("Histórico temporariamente indisponível.")
+            with st.spinner("A IA está processando sua voz..."):
+                try:
+                    # 1. Solicitação para a OpenAI (Isso gera o som)
+                    audio_response = openai_client.audio.speech.create(
+                        model=modelo_ia,
+                        voice=voz_selecionada,
+                        input=texto_roteiro[:4000] # Limite de caracteres
+                    )
+                    audio_bytes = audio_response.content
+                    
+                    # 2. Exibição do Player (Aparece na hora para o usuário)
+                    st.audio(audio_bytes)
+                    st.success("Á
