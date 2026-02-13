@@ -2,88 +2,96 @@ import streamlit as st
 from openai import OpenAI
 from supabase import create_client
 import uuid
-import time
 
-# --- 1. FORÇAR REFRESH DE ESTADO ---
-st.set_page_config(page_title="Dark Infor", layout="wide")
-
-if "autenticado" not in st.session_state:
-    st.session_state.autenticado = False
+# --- 1. LIMPEZA DE MEMÓRIA ---
+# Se o usuário não está logado, garantimos que não haja lixo de sessão antiga
+if "logado" not in st.session_state:
+    st.session_state.logado = False
 if "u_id" not in st.session_state:
     st.session_state.u_id = None
 
-# Conexão
-s_url = st.secrets["SUPABASE_URL"]
-s_key = st.secrets["SUPABASE_KEY"]
-supabase = create_client(s_url, s_key)
-openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+# --- 2. CONEXÃO DIRETA (SEM CACHE PARA TESTE) ---
+# Forçamos a conexão a ser lida do zero
+try:
+    supabase = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+    openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+except Exception as e:
+    st.error(f"Erro crítico nas chaves: {e}")
 
-# --- 2. LOGIN (MATA O CLIQUE DUPLO) ---
-if not st.session_state.autenticado:
-    st.title("🛡️ Acesso Dark Infor")
+# --- 3. LOGICA DE TELA ---
+if not st.session_state.logado:
+    st.title("🛡️ Dark Infor - Acesso Direto")
     
-    # Placeholder para limpar mensagens antigas
-    container_msg = st.empty()
+    # Placeholder para mensagens sumirem rápido
+    msg = st.empty()
     
-    e = st.text_input("E-mail", key="email_box")
-    s = st.text_input("Senha", type="password", key="pass_box")
-    
-    if st.button("ENTRAR AGORA", use_container_width=True):
-        try:
-            res = supabase.auth.sign_in_with_password({"email": e, "password": s})
-            if res.user:
-                st.session_state.autenticado = True
-                st.session_state.u_id = res.user.id
-                container_msg.success("Acesso confirmado! Redirecionando...")
-                time.sleep(0.5)
-                st.rerun() # FORÇA O STREAMLIT A MUDAR DE PÁGINA
-        except:
-            container_msg.error("E-mail ou senha incorretos.")
+    with st.form("login_blindado"):
+        email = st.text_input("E-mail")
+        senha = st.text_input("Senha", type="password")
+        btn = st.form_submit_button("ENTRAR AGORA", use_container_width=True)
+        
+        if btn:
+            try:
+                # Tenta logar
+                res = supabase.auth.sign_in_with_password({"email": email, "password": senha})
+                if res.user:
+                    # SUCESSO: Limpa cache e define estado antes do rerun
+                    st.session_state.logado = True
+                    st.session_state.u_id = res.user.id
+                    st.cache_data.clear() # Limpa lixo de erros passados
+                    st.rerun()
+            except Exception as e_login:
+                msg.error("E-mail ou senha inválidos.")
 
-# --- 3. GERADOR (À PROVA DE ERRO DE BUCKET) ---
 else:
-    st.sidebar.button("Sair", on_click=lambda: st.session_state.update({"autenticado": False}))
-    st.title("🎙️ Gerador de Voz")
+    # TELA DO GERADOR
+    st.sidebar.button("SAIR", on_click=lambda: st.session_state.update({"logado": False}))
+    st.title("🎙️ Gerador de Voz Profissional")
     
-    txt = st.text_area("Roteiro:", height=200)
-    voz = st.selectbox("Voz:", ["onyx", "alloy", "echo", "fable", "nova", "shimmer"])
+    texto = st.text_area("Roteiro:", height=200)
+    voz = st.selectbox("Escolha a Voz:", ["onyx", "alloy", "echo", "fable", "nova", "shimmer"])
     
     if st.button("🔥 GERAR"):
-        if txt:
-            with st.spinner("Processando..."):
+        if texto:
+            with st.spinner("Gerando..."):
                 try:
-                    # GERA O ÁUDIO PRIMEIRO
-                    resp = openai_client.audio.speech.create(model="tts-1", voice=voz, input=txt[:4000])
+                    # 1. OpenAI gera o áudio (Isso aqui SEMPRE tem que aparecer)
+                    resp = openai_client.audio.speech.create(model="tts-1", voice=voz, input=texto[:4000])
                     audio_bytes = resp.content
                     
-                    # MOSTRA O ÁUDIO NA TELA (Isso aqui tem que aparecer!)
+                    # PLAYER IMEDIATO
                     st.audio(audio_bytes)
-                    st.success("Áudio pronto!")
+                    st.success("Áudio gerado!")
 
-                    # TENTA SALVAR (Se der erro de bucket, ele não mostra erro vermelho)
+                    # 2. SALVAMENTO (Com a Service Role, o bucket 'darkinfor' DEVE funcionar)
                     try:
-                        f_name = f"{st.session_state.u_id}/{uuid.uuid4()}.mp3"
-                        # O segredo: o bucket no Supabase DEVE estar em minúsculo: darkinfor
-                        supabase.storage.from_("darkinfor").upload(path=f_name, file=audio_bytes)
+                        # Nome único
+                        f_path = f"{st.session_state.u_id}/{uuid.uuid4()}.mp3"
                         
-                        url = supabase.storage.from_("darkinfor").get_public_url(f_name)
+                        # Upload (Usando bucket em minúsculo conforme SQL)
+                        supabase.storage.from_("darkinfor").upload(path=f_path, file=audio_bytes)
+                        
+                        # Link e Banco
+                        link = supabase.storage.from_("darkinfor").get_public_url(f_path)
                         supabase.table("historico_audios").insert({
                             "user_id": st.session_state.u_id,
-                            "texto": txt[:50],
-                            "url_audio": url
+                            "texto": texto[:50],
+                            "url_audio": link
                         }).execute()
-                    except Exception as e_interno:
-                        # Se o bucket der erro, ele avisa mas NÃO trava a tela
-                        st.info("Nota: Áudio disponível acima, mas o histórico está em manutenção.")
+                        st.info("Salvo no histórico.")
+                    except Exception as e_save:
+                        # Se der erro de bucket aqui, é porque o Supabase ainda está processando o SQL que você rodou
+                        st.warning(f"Aviso: Áudio pronto, mas o servidor do banco está ocupado (Erro: {e_save})")
+                        
                 except Exception as ex:
-                    st.error(f"Erro na geração da voz: {ex}")
+                    st.error(f"Erro na OpenAI: {ex}")
 
     # HISTÓRICO
     st.divider()
     try:
         h = supabase.table("historico_audios").select("*").eq("user_id", st.session_state.u_id).execute()
         for i in h.data:
-            with st.expander(f"Texto: {i['texto']}"):
+            with st.expander(f"Áudio: {i['texto']}"):
                 st.audio(i['url_audio'])
     except:
         pass
