@@ -2,87 +2,105 @@ import streamlit as st
 from openai import OpenAI
 from supabase import create_client
 import uuid
+import time
 
-# --- 1. CONFIGURAÇÃO DE ESTADO ---
+# --- CONFIGURAÇÃO INICIAL ---
 st.set_page_config(page_title="Dark Infor", layout="wide")
 
-# Inicializa as variáveis de controle (Essencial para F5 e clique único)
+# Inicializa as variáveis para o login não cair e não precisar de 2 cliques
 if "logado" not in st.session_state:
     st.session_state.logado = False
-if "u_id" not in st.session_state:
-    st.session_state.u_id = None
+if "usuario_id" not in st.session_state:
+    st.session_state.usuario_id = None
 
-# Conexão com Supabase e OpenAI
-supabase = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
-openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+# Conexão (Centralizada para evitar erros)
+@st.cache_resource
+def iniciar_conexoes():
+    s = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+    o = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+    return s, o
 
-# --- 2. TELA DE LOGIN (SEM CLIQUE DUPLO) ---
+supabase, openai_client = iniciar_conexoes()
+
+# --- TELA DE LOGIN (SOLUÇÃO PARA O CLIQUE DUPLO) ---
 if not st.session_state.logado:
-    st.title("🛡️ Acesso Dark Infor")
+    st.title("🛡️ Sistema Dark Infor")
     
+    # Organiza o login em uma caixa limpa
     with st.container():
-        email = st.text_input("E-mail", key="em")
-        senha = st.text_input("Senha", type="password", key="pw")
+        email_log = st.text_input("E-mail", key="em_final")
+        senha_log = st.text_input("Senha", type="password", key="pw_final")
         
-        if st.button("ENTRAR NO SISTEMA", use_container_width=True):
+        if st.button("ACESSAR SISTEMA", use_container_width=True):
             try:
-                res = supabase.auth.sign_in_with_password({"email": email, "password": senha})
+                # Tenta autenticar
+                res = supabase.auth.sign_in_with_password({"email": email_log, "password": senha_log})
                 if res.user:
+                    # SALVA O ESTADO ANTES DE RECARREGAR
                     st.session_state.logado = True
-                    st.session_state.u_id = res.user.id
-                    st.rerun() # Entra imediatamente
+                    st.session_state.usuario_id = res.user.id
+                    st.success("Acesso autorizado!")
+                    time.sleep(0.4)
+                    st.rerun() # Entra de primeira
             except:
-                st.error("Dados incorretos. Verifique e tente novamente.")
+                st.error("E-mail ou senha incorretos.")
 
-# --- 3. TELA DO GERADOR (SÓ ACESSA SE LOGADO) ---
+# --- TELA DO GERADOR (SÓ ACESSA QUEM ESTÁ LOGADO) ---
 else:
-    st.sidebar.button("Sair", on_click=lambda: st.session_state.update({"logado": False}))
-    st.title("🎙️ Gerador de Voz Profissional")
+    st.sidebar.button("Encerrar Sessão", on_click=lambda: st.session_state.update({"logado": False}))
+    st.sidebar.write(f"Usuário: {st.session_state.usuario_id[:8]}...")
+
+    st.title("🎙️ Gerador de Áudio Profissional")
     
-    txt = st.text_area("Digite o texto aqui:", height=200)
-    voz = st.selectbox("Escolha a Voz:", ["onyx", "alloy", "echo", "fable", "nova", "shimmer"])
+    roteiro = st.text_area("Roteiro para a voz:", height=200)
+    voz_escolhida = st.selectbox("Escolha a Voz:", ["onyx", "alloy", "echo", "fable", "nova", "shimmer"])
     
-    if st.button("🔥 GERAR E SALVAR"):
-        if not txt:
-            st.warning("Escreva algo primeiro.")
+    if st.button("🔥 GERAR E SALVAR AGORA"):
+        if not roteiro:
+            st.warning("O campo de roteiro está vazio.")
         else:
-            with st.spinner("Processando..."):
+            with st.spinner("Gerando voz e salvando..."):
                 try:
-                    # 1. Gerar áudio
-                    resp = openai_client.audio.speech.create(model="tts-1", voice=voz, input=txt[:4000])
-                    audio_content = resp.content
+                    # 1. Gera o áudio na OpenAI
+                    resp = openai_client.audio.speech.create(
+                        model="tts-1", voice=voz_escolhida, input=roteiro[:4000]
+                    )
+                    conteudo_audio = resp.content
                     
-                    # 2. Salvar (O SQL acima garante que o bucket 'darkinfor' exista)
-                    f_name = f"{st.session_state.u_id}/{uuid.uuid4()}.mp3"
+                    # 2. Mostra o áudio na tela imediatamente
+                    st.audio(conteudo_audio)
                     
-                    # Tentativa de upload
+                    # 3. Salva no Storage e no Banco (Com tratamento de erro silencioso)
                     try:
-                        supabase.storage.from_("darkinfor").upload(path=f_name, file=audio_content)
+                        nome_arq = f"{st.session_state.usuario_id}/{uuid.uuid4()}.mp3"
+                        # Tenta fazer o upload
+                        supabase.storage.from_("darkinfor").upload(path=nome_arq, file=conteudo_audio)
                         
-                        # 3. Registrar no banco
-                        f_url = supabase.storage.from_("darkinfor").get_public_url(f_name)
+                        # Pega a URL e salva no histórico
+                        url_publica = supabase.storage.from_("darkinfor").get_public_url(nome_arq)
                         supabase.table("historico_audios").insert({
-                            "user_id": st.session_state.u_id,
-                            "texto": txt[:50] + "...",
-                            "url_audio": f_url
+                            "user_id": st.session_state.usuario_id,
+                            "texto": roteiro[:50] + "...",
+                            "url_audio": url_publica
                         }).execute()
-                        st.success("Áudio salvo no histórico!")
-                    except Exception as e_stor:
-                        st.error(f"Erro no Storage: {e_stor}. Verifique se o bucket 'darkinfor' existe no Supabase.")
-
-                    # Mostrar o player
-                    st.audio(audio_content)
+                        st.success("Salvo no histórico com sucesso!")
+                    except Exception as e_bd:
+                        # Se der erro no banco, ele não trava a tela, apenas avisa
+                        st.info(f"Nota: Áudio gerado, mas houve um erro no salvamento automático.")
+                        
                 except Exception as ex:
-                    st.error(f"Erro na geração: {ex}")
+                    st.error(f"Erro técnico na OpenAI: {ex}")
 
-    # --- 4. EXIBIR HISTÓRICO ---
+    # --- EXIBIÇÃO DO HISTÓRICO ---
     st.divider()
-    st.subheader("📜 Meus Áudios Antigos")
+    st.subheader("📜 Seu Histórico de Áudios")
     try:
-        h = supabase.table("historico_audios").select("*").eq("user_id", st.session_state.u_id).execute()
-        if h.data:
-            for item in h.data:
-                with st.expander(f"Áudio: {item['texto']}"):
+        dados = supabase.table("historico_audios").select("*").eq("user_id", st.session_state.usuario_id).execute()
+        if dados.data:
+            for item in dados.data:
+                with st.expander(f"Texto: {item['texto']}"):
                     st.audio(item['url_audio'])
+        else:
+            st.write("Nenhum áudio salvo ainda.")
     except:
         pass
