@@ -3,77 +3,86 @@ from openai import OpenAI
 from supabase import create_client
 import uuid
 
-# 1. FORÇAR ESTADO INICIAL
+# --- 1. CONFIGURAÇÃO DE ESTADO ---
+st.set_page_config(page_title="Dark Infor", layout="wide")
+
+# Inicializa as variáveis de controle (Essencial para F5 e clique único)
 if "logado" not in st.session_state:
     st.session_state.logado = False
-if "user_id" not in st.session_state:
-    st.session_state.user_id = None
+if "u_id" not in st.session_state:
+    st.session_state.u_id = None
 
-# 2. CONEXÃO (Use a Service Role Key no segredo para ignorar erros de permissão)
-s_url = st.secrets["SUPABASE_URL"]
-s_key = st.secrets["SUPABASE_KEY"] # Certifique-se que aqui esteja a SERVICE_ROLE
-supabase = create_client(s_url, s_key)
+# Conexão com Supabase e OpenAI
+supabase = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-# --- FUNÇÃO DE LOGIN DIRETA ---
-def executar_login(e, s):
-    try:
-        res = supabase.auth.sign_in_with_password({"email": e, "password": s})
-        if res.user:
-            st.session_state.user_id = res.user.id
-            st.session_state.logado = True
-            st.rerun()
-    except:
-        st.error("Falha na autenticação.")
-
-# --- CONTROLE DE TELA (NÍVEL 0) ---
+# --- 2. TELA DE LOGIN (SEM CLIQUE DUPLO) ---
 if not st.session_state.logado:
-    st.title("🛡️ Sistema Dark Infor")
+    st.title("🛡️ Acesso Dark Infor")
     
-    # Campo de entrada sem formulário para evitar o delay do submit
-    email_user = st.text_input("E-mail")
-    senha_user = st.text_input("Senha", type="password")
-    
-    if st.button("ACESSAR AGORA"):
-        executar_login(email_user, senha_user)
+    with st.container():
+        email = st.text_input("E-mail", key="em")
+        senha = st.text_input("Senha", type="password", key="pw")
+        
+        if st.button("ENTRAR NO SISTEMA", use_container_width=True):
+            try:
+                res = supabase.auth.sign_in_with_password({"email": email, "password": senha})
+                if res.user:
+                    st.session_state.logado = True
+                    st.session_state.u_id = res.user.id
+                    st.rerun() # Entra imediatamente
+            except:
+                st.error("Dados incorretos. Verifique e tente novamente.")
 
+# --- 3. TELA DO GERADOR (SÓ ACESSA SE LOGADO) ---
 else:
-    # SE CHEGOU AQUI, O LOGIN FOI IGNORADO
     st.sidebar.button("Sair", on_click=lambda: st.session_state.update({"logado": False}))
+    st.title("🎙️ Gerador de Voz Profissional")
     
-    st.title("🎙️ Gerador de Áudio")
-    txt = st.text_area("Roteiro:")
-    vz = st.selectbox("Voz:", ["onyx", "alloy", "echo", "fable", "nova", "shimmer"])
-
-    if st.button("🔥 GERAR"):
-        if txt:
-            with st.spinner("Gerando..."):
+    txt = st.text_area("Digite o texto aqui:", height=200)
+    voz = st.selectbox("Escolha a Voz:", ["onyx", "alloy", "echo", "fable", "nova", "shimmer"])
+    
+    if st.button("🔥 GERAR E SALVAR"):
+        if not txt:
+            st.warning("Escreva algo primeiro.")
+        else:
+            with st.spinner("Processando..."):
                 try:
-                    # Geração OpenAI
-                    resp = openai_client.audio.speech.create(model="tts-1", voice=vz, input=txt[:4000])
-                    audio_data = resp.content
+                    # 1. Gerar áudio
+                    resp = openai_client.audio.speech.create(model="tts-1", voice=voz, input=txt[:4000])
+                    audio_content = resp.content
                     
-                    # Upload Direto (A Service Role garante que não haverá erro de política)
-                    path = f"audios/{uuid.uuid4()}.mp3"
-                    supabase.storage.from_("darkinfor").upload(path, audio_data)
+                    # 2. Salvar (O SQL acima garante que o bucket 'darkinfor' exista)
+                    f_name = f"{st.session_state.u_id}/{uuid.uuid4()}.mp3"
                     
-                    # Link e Histórico
-                    url = supabase.storage.from_("darkinfor").get_public_url(path)
-                    supabase.table("historico_audios").insert({
-                        "user_id": st.session_state.user_id,
-                        "texto": txt[:50],
-                        "url_audio": url
-                    }).execute()
-                    
-                    st.audio(audio_data)
-                    st.success("Sucesso!")
-                except Exception as e:
-                    st.error(f"Erro: {e}")
+                    # Tentativa de upload
+                    try:
+                        supabase.storage.from_("darkinfor").upload(path=f_name, file=audio_content)
+                        
+                        # 3. Registrar no banco
+                        f_url = supabase.storage.from_("darkinfor").get_public_url(f_name)
+                        supabase.table("historico_audios").insert({
+                            "user_id": st.session_state.u_id,
+                            "texto": txt[:50] + "...",
+                            "url_audio": f_url
+                        }).execute()
+                        st.success("Áudio salvo no histórico!")
+                    except Exception as e_stor:
+                        st.error(f"Erro no Storage: {e_stor}. Verifique se o bucket 'darkinfor' existe no Supabase.")
 
-    # Exibição do histórico simplificada
+                    # Mostrar o player
+                    st.audio(audio_content)
+                except Exception as ex:
+                    st.error(f"Erro na geração: {ex}")
+
+    # --- 4. EXIBIR HISTÓRICO ---
     st.divider()
+    st.subheader("📜 Meus Áudios Antigos")
     try:
-        h = supabase.table("historico_audios").select("*").eq("user_id", st.session_state.user_id).execute()
-        for i in h.data:
-            st.audio(i['url_audio'])
-    except: pass
+        h = supabase.table("historico_audios").select("*").eq("user_id", st.session_state.u_id).execute()
+        if h.data:
+            for item in h.data:
+                with st.expander(f"Áudio: {item['texto']}"):
+                    st.audio(item['url_audio'])
+    except:
+        pass
