@@ -4,29 +4,19 @@ from supabase import create_client
 import uuid
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Dark Infor - Sistema de Voz Profissional", layout="wide")
-
-# --- ESTILO DARK ---
-st.markdown("""
-    <style>
-    .main { background-color: #0e1117; color: white; }
-    .stButton>button { width: 100%; border-radius: 5px; background-color: #ff4b4b; color: white; }
-    </style>
-    """, unsafe_allow_html=True)
+st.set_page_config(page_title="Dark Infor - Voz Profissional", layout="wide")
 
 # --- INICIALIZAÇÃO DE CLIENTES ---
 try:
-    # Utiliza as chaves configuradas nos seus Secrets
     supabase = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
     openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 except Exception as e:
-    st.error(f"Erro nos Segredos (Secrets): {e}")
+    st.error(f"Erro nos Segredos: {e}")
 
-# --- GERENCIAMENTO DE SESSÃO ---
 if "user" not in st.session_state:
     st.session_state.user = None
 
-# --- TELAS DE ACESSO (LOGIN/CADASTRO) ---
+# --- TELAS DE ACESSO ---
 def autenticacao():
     st.title("🛡️ Acesso Dark Infor")
     aba_login, aba_cadastro = st.tabs(["Login", "Cadastro"])
@@ -44,11 +34,11 @@ def autenticacao():
 
     with aba_cadastro:
         n_email = st.text_input("Novo E-mail", key="cad_email")
-        n_senha = st.text_input("Nova Senha (mín. 6 chars)", type="password", key="cad_pass")
+        n_senha = st.text_input("Nova Senha", type="password", key="cad_pass")
         if st.button("Criar Conta"):
             try:
                 supabase.auth.sign_up({"email": n_email, "password": n_senha})
-                st.success("Cadastro realizado! Tente fazer o login.")
+                st.success("Conta criada! Tente fazer o login.")
             except Exception as e:
                 st.error(f"Erro: {e}")
 
@@ -61,7 +51,53 @@ def interface_gerador():
 
     st.title("🎙️ Gerador de Voz Profissional")
     
-    # Campo para 100 mil caracteres
-    texto = st.text_area("Roteiro do Vídeo (Até 100.000 caracteres):", height=300, max_chars=100000)
+    texto = st.text_area("Roteiro (Até 100k caracteres):", height=300, max_chars=100000)
     
+    # LINHA 67 CORRIGIDA AQUI:
     col1, col2 = st.columns(2)
+    
+    with col1:
+        provedor = st.selectbox("Tecnologia:", ["OpenAI", "ElevenLabs"])
+    with col2:
+        voz = st.selectbox("Voz:", ["alloy", "echo", "fable", "onyx", "nova", "shimmer"])
+
+    if st.button("Gerar Áudio e Salvar"):
+        if not texto:
+            st.warning("Insira um texto.")
+        else:
+            with st.spinner("Sintetizando..."):
+                try:
+                    response = openai_client.audio.speech.create(
+                        model="tts-1",
+                        voice=voz,
+                        input=texto[:4096]
+                    )
+                    audio_bytes = response.content
+                    nome_arquivo = f"{st.session_state.user.id}/{uuid.uuid4()}.mp3"
+
+                    # UPLOAD PARA O BUCKET DARKINFOR
+                    supabase.storage.from_("DARKINFOR").upload(
+                        path=nome_arquivo,
+                        file=audio_bytes,
+                        file_options={"content-type": "audio/mpeg"}
+                    )
+
+                    url_pub = supabase.storage.from_("DARKINFOR").get_public_url(nome_arquivo)
+
+                    supabase.table("historico_audios").insert({
+                        "user_id": st.session_state.user.id,
+                        "texto": texto[:100],
+                        "url_audio": url_pub
+                    }).execute()
+
+                    st.audio(audio_bytes)
+                    st.download_button("📥 Baixar MP3", data=audio_bytes, file_name="audio.mp3")
+                    st.success("Salvo no histórico!")
+                except Exception as e:
+                    st.error(f"Erro: {e}")
+
+# --- LÓGICA PRINCIPAL ---
+if st.session_state.user is None:
+    autenticacao()
+else:
+    interface_gerador()
