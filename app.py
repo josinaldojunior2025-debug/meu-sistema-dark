@@ -64,4 +64,4 @@ def interface_gerador():
     # Campo para 100 mil caracteres
     texto = st.text_area("Roteiro do Vídeo (Até 100.000 caracteres):", height=300, max_chars=100000)
     
-    col1, col2 = st.columns(
+    col1, col2 = st.columns(2)
