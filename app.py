@@ -2,129 +2,99 @@ import streamlit as st
 from openai import OpenAI
 from supabase import create_client
 import uuid
-import time
 
-# --- 1. CONFIGURAÇÃO E PERSISTÊNCIA ---
+# --- 1. CONFIGURAÇÃO DE ESTADO ---
 st.set_page_config(page_title="Dark Infor", layout="wide")
 
-# Inicializa o estado do usuário se não existir
-if "user" not in st.session_state:
-    st.session_state.user = None
+# Inicializa as variáveis de sessão para não perder no F5
+if "logado" not in st.session_state:
+    st.session_state.logado = False
+if "user_id" not in st.session_state:
+    st.session_state.user_id = None
+if "user_email" not in st.session_state:
+    st.session_state.user_email = None
 
-# Função para conectar ao Supabase e OpenAI
+# Conexão Única
 @st.cache_resource
-def get_clients():
-    s_url = st.secrets["SUPABASE_URL"]
-    s_key = st.secrets["SUPABASE_KEY"]
-    o_key = st.secrets["OPENAI_API_KEY"]
-    return create_client(s_url, s_key), OpenAI(api_key=o_key)
+def conexao():
+    s = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+    o = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+    return s, o
 
-try:
-    supabase, openai_client = get_clients()
-except Exception as e:
-    st.error(f"Erro de conexão: {e}")
-    st.stop()
+supabase, openai_client = conexao()
 
-# --- 2. FUNÇÕES DE SUPORTE ---
-def deslogar():
-    st.session_state.user = None
-    st.rerun()
-
-# --- 3. TELA DE LOGIN (CORREÇÃO DO CLIQUE DUPLO) ---
-if st.session_state.user is None:
-    st.title("🛡️ Login Dark Infor")
-    t1, t2 = st.tabs(["Entrar", "Cadastrar"])
+# --- 2. TELA DE LOGIN ---
+def mostrar_login():
+    st.title("🛡️ Acesso Dark Infor")
     
-    with t1:
-        with st.form("login_form"):
-            e = st.text_input("E-mail")
-            s = st.text_input("Senha", type="password")
-            submit = st.form_submit_button("Acessar Conta")
-            
-            if submit:
-                try:
-                    res = supabase.auth.sign_in_with_password({"email": e, "password": s})
-                    if res.user:
-                        # Define o usuário e recarrega IMEDIATAMENTE
-                        st.session_state.user = res.user
-                        st.success("Autenticado! Entrando...")
-                        time.sleep(0.5)
-                        st.rerun()
-                except:
-                    st.error("E-mail ou senha incorretos.")
+    col_login, _ = st.columns([1, 1])
+    with col_login:
+        email = st.text_input("E-mail")
+        senha = st.text_input("Senha", type="password")
+        
+        if st.button("Entrar Agora", use_container_width=True):
+            try:
+                res = supabase.auth.sign_in_with_password({"email": email, "password": senha})
+                if res.user:
+                    st.session_state.logado = True
+                    st.session_state.user_id = res.user.id
+                    st.session_state.user_email = res.user.email
+                    st.rerun() # Pula direto para o gerador
+            except:
+                st.error("E-mail ou senha inválidos.")
 
-    with t2:
-        with st.form("cadastro_form"):
-            ne = st.text_input("Novo E-mail")
-            ns = st.text_input("Nova Senha", type="password")
-            btn_cad = st.form_submit_button("Criar Conta")
-            if btn_cad:
-                try:
-                    supabase.auth.sign_up({"email": ne, "password": ns})
-                    st.info("Verifique seu e-mail ou tente logar.")
-                except: st.error("Erro ao cadastrar.")
-
-# --- 4. INTERFACE DO GERADOR (APÓS LOGIN) ---
-else:
-    st.sidebar.write(f"Sessão ativa: {st.session_state.user.email}")
-    if st.sidebar.button("Sair / Deslogar"):
-        deslogar()
+# --- 3. TELA DO GERADOR ---
+def mostrar_gerador():
+    st.sidebar.write(f"Sessão: {st.session_state.user_email}")
+    if st.sidebar.button("Sair"):
+        st.session_state.logado = False
+        st.rerun()
 
     st.title("🎙️ Gerador de Voz Profissional")
-    txt = st.text_area("Roteiro:", height=200, placeholder="Cole seu texto aqui...")
-    vz = st.selectbox("Escolha a Voz:", ["onyx", "alloy", "echo", "fable", "nova", "shimmer"])
+    
+    texto = st.text_area("Roteiro:", height=200)
+    voz = st.selectbox("Escolha a Voz:", ["onyx", "alloy", "echo", "fable", "nova", "shimmer"])
     
     if st.button("🔥 Gerar e Salvar"):
-        if not txt:
-            st.warning("O texto está vazio.")
-        else:
-            with st.spinner("Processando áudio e salvando..."):
+        if texto:
+            with st.spinner("Gerando áudio..."):
                 try:
-                    # 1. OpenAI
-                    resp = openai_client.audio.speech.create(model="tts-1", voice=vz, input=txt[:4000])
-                    audio_content = resp.content
+                    # Gera Áudio
+                    resp = openai_client.audio.speech.create(model="tts-1", voice=voz, input=texto[:4000])
+                    audio_bytes = resp.content
                     
-                    # 2. Mostrar logo o player
-                    st.audio(audio_content)
+                    # Nome único
+                    nome_f = f"{st.session_state.user_id}/{uuid.uuid4()}.mp3"
                     
-                    # 3. Tentar salvar (Ignora erros de RLS para não travar o usuário)
-                    try:
-                        file_id = f"{st.session_state.user.id}/{uuid.uuid4()}.mp3"
-                        # Forçando bucket em minúsculo
-                        bucket = "darkinfor"
-                        
-                        # Upload
-                        supabase.storage.from_(bucket).upload(
-                            path=file_id, 
-                            file=audio_content, 
-                            file_options={"content-type": "audio/mpeg"}
-                        )
-                        
-                        # Inserção no Banco
-                        public_url = supabase.storage.from_(bucket).get_public_url(file_id)
-                        supabase.table("historico_audios").insert({
-                            "user_id": st.session_state.user.id,
-                            "texto": txt[:50] + "...",
-                            "url_audio": public_url
-                        }).execute()
-                        
-                        st.success("Salvo no histórico!")
-                    except Exception as e_db:
-                        st.warning(f"Áudio gerado, mas houve um erro ao salvar no banco: {e_db}")
+                    # Salva no Storage
+                    supabase.storage.from_("darkinfor").upload(path=nome_f, file=audio_bytes, file_options={"content-type": "audio/mpeg"})
+                    
+                    # Salva no Banco
+                    url = supabase.storage.from_("darkinfor").get_public_url(nome_f)
+                    supabase.table("historico_audios").insert({
+                        "user_id": st.session_state.user_id,
+                        "texto": texto[:50],
+                        "url_audio": url
+                    }).execute()
+                    
+                    st.audio(audio_bytes)
+                    st.success("Áudio gerado e salvo!")
+                except Exception as e:
+                    st.error(f"Erro: {e}")
 
-                except Exception as ex:
-                    st.error(f"Erro na geração: {ex}")
-
-    # --- 5. HISTÓRICO ---
+    # Histórico
     st.divider()
-    st.subheader("📜 Meus Áudios")
+    st.subheader("📜 Histórico")
     try:
-        h = supabase.table("historico_audios").select("*").eq("user_id", st.session_state.user.id).execute()
-        if h.data:
-            for item in h.data:
-                with st.expander(f"Texto: {item['texto']}"):
-                    st.audio(item['url_audio'])
-        else:
-            st.info("Nenhum áudio encontrado.")
+        h = supabase.table("historico_audios").select("*").eq("user_id", st.session_state.user_id).execute()
+        for item in h.data:
+            with st.expander(f"Áudio: {item['texto']}"):
+                st.audio(item['url_audio'])
     except:
-        st.write("Histórico carregando...")
+        pass
+
+# --- 4. CONTROLE DE FLUXO ---
+if not st.session_state.logado:
+    mostrar_login()
+else:
+    mostrar_gerador()
