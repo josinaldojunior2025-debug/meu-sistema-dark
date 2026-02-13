@@ -3,101 +3,96 @@ from openai import OpenAI
 from supabase import create_client
 import uuid
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Dark Infor - Voz Profissional", layout="wide")
+# --- CONFIGURAÇÃO ---
+st.set_page_config(page_title="Dark Infor", layout="wide")
 
-# --- INICIALIZAÇÃO DE CLIENTES ---
 try:
     supabase = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
     openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 except Exception as e:
-    st.error(f"Erro nos Segredos: {e}")
+    st.error(f"Erro nos Secrets: {e}")
 
 if "user" not in st.session_state:
     st.session_state.user = None
 
-# --- TELAS DE ACESSO ---
-def autenticacao():
-    st.title("🛡️ Acesso Dark Infor")
-    aba_login, aba_cadastro = st.tabs(["Login", "Cadastro"])
-    
-    with aba_login:
-        email = st.text_input("E-mail", key="log_email")
-        senha = st.text_input("Senha", type="password", key="log_pass")
-        if st.button("Entrar"):
+# --- AUTENTICAÇÃO ---
+if st.session_state.user is None:
+    st.title("🛡️ Login Dark Infor")
+    aba1, aba2 = st.tabs(["Entrar", "Cadastrar"])
+    with aba1:
+        email = st.text_input("E-mail")
+        senha = st.text_input("Senha", type="password")
+        if st.button("Login"):
             try:
                 res = supabase.auth.sign_in_with_password({"email": email, "password": senha})
                 st.session_state.user = res.user
                 st.rerun()
             except:
-                st.error("E-mail ou senha incorretos.")
-
-    with aba_cadastro:
-        n_email = st.text_input("Novo E-mail", key="cad_email")
-        n_senha = st.text_input("Nova Senha", type="password", key="cad_pass")
+                st.error("Erro no login.")
+    with aba2:
+        n_email = st.text_input("Novo E-mail")
+        n_senha = st.text_input("Nova Senha", type="password")
         if st.button("Criar Conta"):
             try:
                 supabase.auth.sign_up({"email": n_email, "password": n_senha})
-                st.success("Conta criada! Tente fazer o login.")
-            except Exception as e:
-                st.error(f"Erro: {e}")
+                st.success("Conta criada!")
+            except:
+                st.error("Erro no cadastro.")
 
-# --- INTERFACE DO GERADOR ---
-def interface_gerador():
-    st.sidebar.write(f"Logado como: {st.session_state.user.email}")
+# --- GERADOR ---
+else:
+    st.sidebar.write(f"Logado: {st.session_state.user.email}")
     if st.sidebar.button("Sair"):
         st.session_state.user = None
         st.rerun()
 
     st.title("🎙️ Gerador de Voz Profissional")
+    texto = st.text_area("Roteiro (Até 100k caracteres):", height=250, max_chars=100000)
     
-    texto = st.text_area("Roteiro (Até 100k caracteres):", height=300, max_chars=100000)
-    
-    # LINHA 67 CORRIGIDA AQUI:
+    # LINHA 67 CORRIGIDA:
     col1, col2 = st.columns(2)
     
     with col1:
-        provedor = st.selectbox("Tecnologia:", ["OpenAI", "ElevenLabs"])
-    with col2:
-        voz = st.selectbox("Voz:", ["alloy", "echo", "fable", "onyx", "nova", "shimmer"])
-
-    if st.button("Gerar Áudio e Salvar"):
-        if not texto:
-            st.warning("Insira um texto.")
-        else:
-            with st.spinner("Sintetizando..."):
+        voz = st.selectbox("Escolha a Voz:", ["alloy", "echo", "fable", "onyx", "nova", "shimmer"])
+    
+    if st.button("Gerar e Salvar no Perfil"):
+        if texto:
+            with st.spinner("Gerando..."):
                 try:
-                    response = openai_client.audio.speech.create(
-                        model="tts-1",
-                        voice=voz,
-                        input=texto[:4096]
-                    )
-                    audio_bytes = response.content
-                    nome_arquivo = f"{st.session_state.user.id}/{uuid.uuid4()}.mp3"
+                    # Geração OpenAI
+                    response = openai_client.audio.speech.create(model="tts-1", voice=voz, input=texto[:4096])
+                    audio_data = response.content
+                    
+                    # Nome único do arquivo
+                    caminho = f"{st.session_state.user.id}/{uuid.uuid4()}.mp3"
 
-                    # UPLOAD PARA O BUCKET DARKINFOR
+                    # UPLOAD PARA O BUCKET CORRETO (DARKINFOR)
                     supabase.storage.from_("DARKINFOR").upload(
-                        path=nome_arquivo,
-                        file=audio_bytes,
+                        path=caminho, 
+                        file=audio_data, 
                         file_options={"content-type": "audio/mpeg"}
                     )
 
-                    url_pub = supabase.storage.from_("DARKINFOR").get_public_url(nome_arquivo)
-
+                    # LINK E HISTÓRICO
+                    url_p = supabase.storage.from_("DARKINFOR").get_public_url(caminho)
                     supabase.table("historico_audios").insert({
                         "user_id": st.session_state.user.id,
-                        "texto": texto[:100],
-                        "url_audio": url_pub
+                        "texto": texto[:50] + "...",
+                        "url_audio": url_p
                     }).execute()
 
-                    st.audio(audio_bytes)
-                    st.download_button("📥 Baixar MP3", data=audio_bytes, file_name="audio.mp3")
-                    st.success("Salvo no histórico!")
+                    st.audio(audio_data)
+                    st.success("Áudio salvo com sucesso no seu histórico!")
                 except Exception as e:
                     st.error(f"Erro: {e}")
 
-# --- LÓGICA PRINCIPAL ---
-if st.session_state.user is None:
-    autenticacao()
-else:
-    interface_gerador()
+    # EXIBIR HISTÓRICO
+    st.divider()
+    st.subheader("📜 Meus Áudios")
+    try:
+        hist = supabase.table("historico_audios").select("*").eq("user_id", st.session_state.user.id).execute()
+        for item in hist.data:
+            with st.expander(f"Áudio: {item['texto']}"):
+                st.audio(item['url_audio'])
+    except:
+        st.write("Crie seu primeiro áudio!")
