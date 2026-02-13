@@ -4,90 +4,85 @@ from supabase import create_client
 import uuid
 import time
 
-# --- 1. CONFIGURAÇÃO DE SESSÃO (MATA O CLIQUE DUPLO) ---
+# --- 1. CONFIGURAÇÃO (MATA O CLIQUE DUPLO) ---
 st.set_page_config(page_title="Dark Infor", layout="wide")
 
-if "autenticado" not in st.session_state:
-    st.session_state.autenticado = False
-if "usuario_id" not in st.session_state:
-    st.session_state.usuario_id = None
+if "auth_ok" not in st.session_state:
+    st.session_state.auth_ok = False
+if "u_id" not in st.session_state:
+    st.session_state.u_id = None
 
-# Conexão com Supabase e OpenAI
-@st.cache_resource
-def iniciar_conexoes():
-    s = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
-    o = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-    return s, o
+# Clientes
+s_url = st.secrets["SUPABASE_URL"]
+s_key = st.secrets["SUPABASE_KEY"]
+supabase = create_client(s_url, s_key)
+openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-supabase, openai_client = iniciar_conexoes()
-
-# --- 2. TELA DE LOGIN (CORREÇÃO DEFINITIVA) ---
-if not st.session_state.autenticado:
+# --- 2. TELA DE LOGIN ---
+if not st.session_state.auth_ok:
     st.title("🛡️ Acesso Dark Infor")
     
-    email = st.text_input("E-mail", key="login_email")
-    senha = st.text_input("Senha", type="password", key="login_pass")
-    
-    if st.button("ENTRAR NO SISTEMA", use_container_width=True):
-        try:
-            res = supabase.auth.sign_in_with_password({"email": email, "password": senha})
-            if res.user:
-                st.session_state.autenticado = True
-                st.session_state.usuario_id = res.user.id
-                st.success("Logado com sucesso!")
-                time.sleep(0.4)
-                st.rerun() # Entra de primeira sem clique duplo
-        except:
-            st.error("E-mail ou senha incorretos.")
+    with st.container():
+        e = st.text_input("E-mail", key="em")
+        s = st.text_input("Senha", type="password", key="pw")
+        
+        if st.button("ENTRAR", use_container_width=True):
+            try:
+                res = supabase.auth.sign_in_with_password({"email": e, "password": s})
+                if res.user:
+                    st.session_state.auth_ok = True
+                    st.session_state.u_id = res.user.id
+                    st.success("Logado!")
+                    time.sleep(0.4)
+                    st.rerun()
+            except:
+                st.error("Dados incorretos.")
 
-# --- 3. TELA DO GERADOR (SÓ ACESSA LOGADO) ---
+# --- 3. TELA DO GERADOR (À PROVA DE ERROS) ---
 else:
-    st.sidebar.button("Sair", on_click=lambda: st.session_state.update({"autenticado": False}))
-    st.title("🎙️ Gerador de Voz Profissional")
+    st.sidebar.button("Sair", on_click=lambda: st.session_state.update({"auth_ok": False}))
     
-    texto = st.text_area("Roteiro:", height=200, placeholder="Digite o texto aqui...")
+    st.title("🎙️ Gerador de Voz Profissional")
+    txt = st.text_area("Roteiro:", height=200)
     voz = st.selectbox("Escolha a Voz:", ["onyx", "alloy", "echo", "fable", "nova", "shimmer"])
     
-    if st.button("🔥 GERAR ÁUDIO"):
-        if not texto:
-            st.warning("Por favor, digite um texto.")
-        else:
-            with st.spinner("Gerando voz..."):
+    if st.button("🔥 GERAR ÁUDIO AGORA"):
+        if txt:
+            with st.spinner("Gerando..."):
                 try:
-                    # 1. OpenAI gera o áudio (Prioridade Total)
-                    resp = openai_client.audio.speech.create(model="tts-1", voice=voz, input=texto[:4000])
+                    # GERA O ÁUDIO PRIMEIRO (ISSO NÃO PODE FALHAR)
+                    resp = openai_client.audio.speech.create(model="tts-1", voice=voz, input=txt[:4000])
                     audio_bytes = resp.content
                     
-                    # 2. MOSTRA O ÁUDIO NA TELA IMEDIATAMENTE
+                    # MOSTRA O PLAYER NA HORA
                     st.audio(audio_bytes)
-                    st.success("Áudio gerado com sucesso!")
+                    st.success("Áudio pronto!")
 
-                    # 3. Tenta salvar no fundo sem travar a tela
+                    # TENTA SALVAR NO FUNDO (SE DER ERRO, O USUÁRIO NEM VÊ)
                     try:
-                        nome_f = f"{st.session_state.usuario_id}/{uuid.uuid4()}.mp3"
-                        supabase.storage.from_("darkinfor").upload(path=nome_f, file=audio_bytes)
+                        f_name = f"{st.session_state.u_id}/{uuid.uuid4()}.mp3"
+                        supabase.storage.from_("darkinfor").upload(path=f_name, file=audio_bytes)
                         
-                        link = supabase.storage.from_("darkinfor").get_public_url(nome_f)
+                        url = supabase.storage.from_("darkinfor").get_public_url(f_name)
                         supabase.table("historico_audios").insert({
-                            "user_id": st.session_state.usuario_id,
-                            "texto": texto[:50],
-                            "url_audio": link
+                            "user_id": st.session_state.u_id,
+                            "texto": txt[:50],
+                            "url_audio": url
                         }).execute()
-                    except Exception as e_save:
-                        # Se falhar o histórico, o áudio continua na tela
-                        st.info(f"Nota: Áudio gerado, mas houve um erro ao salvar no histórico.")
+                    except:
+                        # Se o banco falhar, apenas ignora para não mostrar erro vermelho
+                        st.info("Aviso: Áudio gerado, mas histórico indisponível no momento.")
                         
                 except Exception as ex:
-                    st.error(f"Erro na geração: {ex}")
+                    st.error(f"Erro na geração da voz: {ex}")
 
-    # --- 4. EXIBIÇÃO DO HISTÓRICO ---
+    # --- HISTÓRICO ---
     st.divider()
-    st.subheader("📜 Meus Áudios")
     try:
-        h = supabase.table("historico_audios").select("*").eq("user_id", st.session_state.usuario_id).execute()
+        h = supabase.table("historico_audios").select("*").eq("user_id", st.session_state.u_id).execute()
         if h.data:
-            for item in h.data:
-                with st.expander(f"Áudio: {item['texto']}"):
-                    st.audio(item['url_audio'])
+            for i in h.data:
+                with st.expander(f"Áudio: {i['texto']}"):
+                    st.audio(i['url_audio'])
     except:
         pass
