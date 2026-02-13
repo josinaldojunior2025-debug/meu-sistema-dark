@@ -4,104 +4,127 @@ from supabase import create_client
 import uuid
 import time
 
-# --- CONFIGURAÇÃO ---
+# --- 1. CONFIGURAÇÃO E PERSISTÊNCIA ---
 st.set_page_config(page_title="Dark Infor", layout="wide")
 
-try:
-    supabase = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
-    openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-except Exception as e:
-    st.error(f"Erro de conexão: {e}")
-
+# Inicializa o estado do usuário se não existir
 if "user" not in st.session_state:
     st.session_state.user = None
 
-# Placeholder para limpar mensagens
-mensagem_placeholder = st.empty()
+# Função para conectar ao Supabase e OpenAI
+@st.cache_resource
+def get_clients():
+    s_url = st.secrets["SUPABASE_URL"]
+    s_key = st.secrets["SUPABASE_KEY"]
+    o_key = st.secrets["OPENAI_API_KEY"]
+    return create_client(s_url, s_key), OpenAI(api_key=o_key)
 
-# --- TELA DE LOGIN ---
-def tela_login():
+try:
+    supabase, openai_client = get_clients()
+except Exception as e:
+    st.error(f"Erro de conexão: {e}")
+    st.stop()
+
+# --- 2. FUNÇÕES DE SUPORTE ---
+def deslogar():
+    st.session_state.user = None
+    st.rerun()
+
+# --- 3. TELA DE LOGIN (CORREÇÃO DO CLIQUE DUPLO) ---
+if st.session_state.user is None:
     st.title("🛡️ Login Dark Infor")
     t1, t2 = st.tabs(["Entrar", "Cadastrar"])
     
     with t1:
-        e = st.text_input("E-mail", key="email_final")
-        s = st.text_input("Senha", type="password", key="pass_final")
-        if st.button("Fazer Login"):
-            try:
-                # Tenta autenticar
-                res = supabase.auth.sign_in_with_password({"email": e, "password": s})
-                if res.user:
-                    st.session_state.user = res.user
-                    mensagem_placeholder.success("Acesso concedido! Entrando...")
-                    time.sleep(0.5)
-                    st.rerun()
-            except:
-                # Só mostra erro se o 'if res.user' não acontecer
-                mensagem_placeholder.error("Dados de acesso incorretos.")
+        with st.form("login_form"):
+            e = st.text_input("E-mail")
+            s = st.text_input("Senha", type="password")
+            submit = st.form_submit_button("Acessar Conta")
+            
+            if submit:
+                try:
+                    res = supabase.auth.sign_in_with_password({"email": e, "password": s})
+                    if res.user:
+                        # Define o usuário e recarrega IMEDIATAMENTE
+                        st.session_state.user = res.user
+                        st.success("Autenticado! Entrando...")
+                        time.sleep(0.5)
+                        st.rerun()
+                except:
+                    st.error("E-mail ou senha incorretos.")
 
     with t2:
-        ne = st.text_input("Novo E-mail")
-        ns = st.text_input("Nova Senha", type="password")
-        if st.button("Criar Conta"):
-            try:
-                supabase.auth.sign_up({"email": ne, "password": ns})
-                st.success("Conta criada! Vá em 'Entrar'.")
-            except: st.error("Erro ao criar conta.")
+        with st.form("cadastro_form"):
+            ne = st.text_input("Novo E-mail")
+            ns = st.text_input("Nova Senha", type="password")
+            btn_cad = st.form_submit_button("Criar Conta")
+            if btn_cad:
+                try:
+                    supabase.auth.sign_up({"email": ne, "password": ns})
+                    st.info("Verifique seu e-mail ou tente logar.")
+                except: st.error("Erro ao cadastrar.")
 
-# --- INTERFACE DO GERADOR ---
-def tela_gerador():
-    st.sidebar.write(f"Conectado: {st.session_state.user.email}")
-    if st.sidebar.button("Sair"):
-        st.session_state.user = None
-        st.rerun()
+# --- 4. INTERFACE DO GERADOR (APÓS LOGIN) ---
+else:
+    st.sidebar.write(f"Sessão ativa: {st.session_state.user.email}")
+    if st.sidebar.button("Sair / Deslogar"):
+        deslogar()
 
     st.title("🎙️ Gerador de Voz Profissional")
-    txt = st.text_area("Roteiro:", height=200)
+    txt = st.text_area("Roteiro:", height=200, placeholder="Cole seu texto aqui...")
     vz = st.selectbox("Escolha a Voz:", ["onyx", "alloy", "echo", "fable", "nova", "shimmer"])
     
-    if st.button("🔥 Gerar Áudio"):
+    if st.button("🔥 Gerar e Salvar"):
         if not txt:
-            st.warning("Por favor, digite um roteiro.")
+            st.warning("O texto está vazio.")
         else:
-            with st.spinner("Criando áudio..."):
+            with st.spinner("Processando áudio e salvando..."):
                 try:
-                    # 1. Gerar na OpenAI
+                    # 1. OpenAI
                     resp = openai_client.audio.speech.create(model="tts-1", voice=vz, input=txt[:4000])
                     audio_content = resp.content
                     
-                    # 2. Mostrar áudio IMEDIATAMENTE
+                    # 2. Mostrar logo o player
                     st.audio(audio_content)
-                    st.success("Áudio gerado com sucesso!")
-
-                    # 3. Tentar salvar (Silencioso para não dar erro na tela)
+                    
+                    # 3. Tentar salvar (Ignora erros de RLS para não travar o usuário)
                     try:
-                        file_path = f"{st.session_state.user.id}/{uuid.uuid4()}.mp3"
-                        supabase.storage.from_("darkinfor").upload(path=file_path, file=audio_content, file_options={"content-type": "audio/mpeg"})
+                        file_id = f"{st.session_state.user.id}/{uuid.uuid4()}.mp3"
+                        # Forçando bucket em minúsculo
+                        bucket = "darkinfor"
                         
-                        url_audio = supabase.storage.from_("darkinfor").get_public_url(file_path)
+                        # Upload
+                        supabase.storage.from_(bucket).upload(
+                            path=file_id, 
+                            file=audio_content, 
+                            file_options={"content-type": "audio/mpeg"}
+                        )
+                        
+                        # Inserção no Banco
+                        public_url = supabase.storage.from_(bucket).get_public_url(file_id)
                         supabase.table("historico_audios").insert({
-                            "user_id": st.session_state.user.id, "texto": txt[:50] + "...", "url_audio": url_audio
+                            "user_id": st.session_state.user.id,
+                            "texto": txt[:50] + "...",
+                            "url_audio": public_url
                         }).execute()
-                    except:
-                        pass # Ignora avisos de banco de dados
-                except Exception as ex:
-                    st.error(f"Erro técnico: {ex}")
+                        
+                        st.success("Salvo no histórico!")
+                    except Exception as e_db:
+                        st.warning(f"Áudio gerado, mas houve um erro ao salvar no banco: {e_db}")
 
-    # --- HISTÓRICO ---
+                except Exception as ex:
+                    st.error(f"Erro na geração: {ex}")
+
+    # --- 5. HISTÓRICO ---
     st.divider()
-    st.subheader("📜 Seu Histórico")
+    st.subheader("📜 Meus Áudios")
     try:
         h = supabase.table("historico_audios").select("*").eq("user_id", st.session_state.user.id).execute()
         if h.data:
             for item in h.data:
-                with st.expander(f"Áudio: {item['texto']}"):
+                with st.expander(f"Texto: {item['texto']}"):
                     st.audio(item['url_audio'])
+        else:
+            st.info("Nenhum áudio encontrado.")
     except:
-        pass
-
-# --- CONTROLE DE FLUXO ---
-if st.session_state.user is None:
-    tela_login()
-else:
-    tela_gerador()
+        st.write("Histórico carregando...")
