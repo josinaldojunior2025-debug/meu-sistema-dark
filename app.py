@@ -1,81 +1,108 @@
 import streamlit as st
 from openai import OpenAI
-from supabase import create_client, Client
+from supabase import create_client
+import uuid
 
-st.set_page_config(page_title="Dark Infor", layout="wide")
+# --- CONFIGURAÇÃO DA PÁGINA ---
+st.set_page_config(page_title="Dark Infor - Locução IA", layout="wide", page_icon="🎙️")
 
-if "logado" not in st.session_state:
-    st.session_state.logado = False
+# Estilo CSS para parecer profissional
+st.markdown("""
+    <style>
+    .main { background-color: #0e1117; }
+    .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #ff4b4b; color: white; }
+    .stTextInput>div>div>input { color: white; }
+    </style>
+    """, unsafe_content_allowed=True)
 
-# Conexão
-try:
-    supabase: Client = create_client(
-        st.secrets["SUPABASE_URL"],
-        st.secrets["SUPABASE_KEY"]
-    )
-    openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-except Exception as e:
-    st.error("Erro nos Secrets. Verifique as chaves.")
-    st.stop()
+if "autenticado" not in st.session_state:
+    st.session_state.autenticado = False
 
-# --- LOGIN ---
-if not st.session_state.logado:
-    st.title("🛡️ Acesso Dark Infor")
+# --- CONEXÕES ---
+@st.cache_resource
+def iniciar_conexoes():
+    try:
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_KEY"]
+        openai_key = st.secrets["OPENAI_API_KEY"]
+        
+        supabase_client = create_client(url, key)
+        openai_client = OpenAI(api_key=openai_key)
+        return supabase_client, openai_client
+    except Exception as e:
+        st.error(f"Erro de configuração: {e}")
+        return None, None
 
-    with st.form("login_form"):
-        email = st.text_input("E-mail")
-        senha = st.text_input("Senha", type="password")
+supabase, openai_client = iniciar_conexoes()
 
-        if st.form_submit_button("ENTRAR", use_container_width=True):
+# --- LÓGICA DE ACESSO ---
+if not st.session_state.autenticado:
+    st.title("🛡️ Sistema Dark Infor")
+    st.subheader("Acesse para gerar suas locuções")
+    
+    with st.container():
+        email = st.text_input("E-mail").strip()
+        senha = st.text_input("Senha", type="password").strip()
+        
+        if st.button("ENTRAR NO SISTEMA"):
+            if email and senha:
+                try:
+                    # Tenta autenticar no Supabase
+                    auth = supabase.auth.sign_in_with_password({"email": email, "password": senha})
+                    if auth.user:
+                        st.session_state.autenticado = True
+                        st.session_state.user_id = auth.user.id
+                        st.success("Acesso liberado!")
+                        st.rerun()
+                except Exception as e:
+                    # Se der "Invalid API key", o erro está nos Secrets do Streamlit
+                    if "Invalid API key" in str(e):
+                        st.error("Erro técnico: A SUPABASE_KEY nos Secrets está incorreta.")
+                    else:
+                        st.error("E-mail ou senha não encontrados.")
+            else:
+                st.warning("Preencha todos os campos.")
 
-            if not email or not senha:
-                st.warning("Preencha e-mail e senha.")
-                st.stop()
-
-            try:
-                res = supabase.auth.sign_in_with_password({
-                    "email": email,
-                    "password": senha
-                })
-
-                if res.user:
-                    st.session_state.logado = True
-                    st.session_state.u_id = res.user.id
-                    st.success("Login realizado!")
-                    st.rerun()
-                else:
-                    st.error("Usuário não retornado.")
-
-            except Exception as e:
-                st.error(f"Falha no login: {e}")
-
-# --- APP ---
+# --- PAINEL DO GERADOR ---
 else:
-    st.title("🎙️ Gerador de Voz Profissional")
-
-    texto = st.text_area("Roteiro:", height=200)
-    voz = st.selectbox("Voz:", ["onyx", "alloy", "nova", "shimmer"])
-
-    if st.button("GERAR ÁUDIO"):
-
-        if not texto:
-            st.warning("Digite um roteiro.")
-            st.stop()
-
-        with st.spinner("IA Processando..."):
-            try:
-                resp = openai_client.audio.speech.create(
-                    model="tts-1",
-                    voice=voz,
-                    input=texto[:4000]
-                )
-
-                st.audio(resp.content)
-                st.success("Áudio gerado!")
-
-            except Exception as e:
-                st.error(f"Erro OpenAI: {e}")
-
-    if st.button("Logout"):
-        st.session_state.logado = False
+    st.sidebar.title("🎙️ Menu")
+    if st.sidebar.button("SAIR"):
+        st.session_state.autenticado = False
         st.rerun()
+
+    st.title("🎙️ Gerador de Locução Profissional")
+    
+    texto = st.text_area("Digite o roteiro aqui:", placeholder="Ex: Olá, seja bem-vindo à Dark Infor...", height=200)
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        voz = st.selectbox("Escolha a Voz:", ["onyx", "alloy", "echo", "fable", "nova", "shimmer"])
+    with col2:
+        modelo = st.radio("Qualidade:", ["tts-1", "tts-1-hd"], horizontal=True)
+
+    if st.button("🔥 GERAR ÁUDIO AGORA"):
+        if not texto:
+            st.error("Por favor, digite um texto.")
+        else:
+            with st.spinner("IA processando voz..."):
+                try:
+                    # Gera áudio na OpenAI
+                    response = openai_client.audio.speech.create(
+                        model=modelo,
+                        voice=voz,
+                        input=texto[:4000]
+                    )
+                    
+                    audio_content = response.content
+                    st.audio(audio_content)
+                    st.success("Áudio gerado com sucesso!")
+                    
+                    # Tenta salvar no banco (opcional)
+                    try:
+                        nome_arquivo = f"{st.session_state.user_id}/{uuid.uuid4()}.mp3"
+                        supabase.storage.from_("darkinfor").upload(nome_arquivo, audio_content)
+                    except:
+                        pass # Continua mesmo se falhar o upload
+                        
+                except Exception as e:
+                    st.error(f"Erro na OpenAI: {e}")
